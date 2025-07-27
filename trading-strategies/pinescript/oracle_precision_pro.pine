@@ -1,0 +1,310 @@
+//@version=5
+indicator("ORACLE PRECISION PRO [Enhanced Gold Strategy]", overlay=true, max_labels_count=500)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ═══                            ORACLE PRECISION PRO                       ═══
+// ═══                         Enhanced Trading Strategy                      ═══
+// ═══                         Multi-Timeframe Analysis                       ═══
+// ═══                      Advanced Risk Management                          ═══
+// ══════════════════════════════════════════════════════════════════════════════
+
+// === BASIC INDICATOR INPUTS ===
+i_grp1 = "═══ Technical Indicators ═══"
+fastEMA = input.int(9, "Fast EMA Period", group=i_grp1)
+slowEMA = input.int(21, "Slow EMA Period", group=i_grp1)
+rsiLen = input.int(14, "RSI Length", group=i_grp1)
+rsiOB = input.int(70, "RSI Overbought Level", group=i_grp1)
+rsiOS = input.int(30, "RSI Oversold Level", group=i_grp1)
+bbLen = input.int(20, "Bollinger Band Length", group=i_grp1)
+bbMult = input.float(2.0, "BB Multiplier", group=i_grp1)
+atrLen = input.int(14, "ATR Length", group=i_grp1)
+adxLen = input.int(14, "ADX Length", group=i_grp1)
+adxMin = input.int(20, "Min ADX Strength", group=i_grp1)
+
+// === CUSTOMIZABLE CONFIDENCE SCORING WEIGHTS ===
+i_grp2 = "═══ Confidence Score Weights ═══"
+trendWeight = input.float(25.0, "Trend Strength Weight (%)", minval=0, maxval=50, step=1, group=i_grp2, tooltip="Weight for EMA trend confirmation")
+macdWeight = input.float(20.0, "MACD Weight (%)", minval=0, maxval=50, step=1, group=i_grp2, tooltip="Weight for MACD signal confirmation")
+rsiWeight = input.float(20.0, "RSI Weight (%)", minval=0, maxval=50, step=1, group=i_grp2, tooltip="Weight for RSI momentum confirmation")
+volWeight = input.float(20.0, "Volatility Weight (%)", minval=0, maxval=50, step=1, group=i_grp2, tooltip="Weight for volatility confirmation")
+adxWeight = input.float(15.0, "ADX Weight (%)", minval=0, maxval=50, step=1, group=i_grp2, tooltip="Weight for ADX trend strength")
+
+// === MULTI-TIMEFRAME ANALYSIS ===
+i_grp3 = "═══ Multi-Timeframe Analysis ═══"
+enableMTF = input.bool(true, "Enable Multi-Timeframe Analysis", group=i_grp3)
+htfTimeframe = input.timeframe("4H", "Higher Timeframe", group=i_grp3, tooltip="Select higher timeframe for trend confirmation")
+mtfWeight = input.float(30.0, "Higher Timeframe Weight (%)", minval=0, maxval=50, step=1, group=i_grp3, tooltip="Additional weight when higher timeframe confirms signal")
+
+// === RISK MANAGEMENT ===
+i_grp4 = "═══ Risk Management ═══"
+enableRiskMgmt = input.bool(true, "Enable Risk Management", group=i_grp4)
+atrMultiplierSL = input.float(2.0, "Stop Loss ATR Multiplier", minval=0.5, maxval=5.0, step=0.1, group=i_grp4, tooltip="Stop loss distance in ATR multiples")
+atrMultiplierTP = input.float(3.0, "Take Profit ATR Multiplier", minval=1.0, maxval=10.0, step=0.1, group=i_grp4, tooltip="Take profit distance in ATR multiples")
+showRiskLevels = input.bool(true, "Show Risk Levels on Chart", group=i_grp4)
+
+// === VISUAL AND ALERT SETTINGS ===
+i_grp5 = "═══ Visual & Alert Settings ═══"
+showLabels = input.bool(true, "Show Signal Labels", group=i_grp5)
+enableAlerts = input.bool(true, "Enable Alerts", group=i_grp5)
+showBackgroundShading = input.bool(true, "Show Background Shading", group=i_grp5, tooltip="Color-coded background for buy/sell zones")
+enhancedAlerts = input.bool(true, "Enhanced Alert Messages", group=i_grp5, tooltip="Include ticker and timeframe in alerts")
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ═══                            CALCULATIONS                                ═══
+// ══════════════════════════════════════════════════════════════════════════════
+
+// === CURRENT TIMEFRAME CALCULATIONS ===
+// EMA calculations for trend direction
+emaFast = ta.ema(close, fastEMA)
+emaSlow = ta.ema(close, slowEMA)
+
+// RSI for momentum analysis
+rsi = ta.rsi(close, rsiLen)
+
+// MACD for trend confirmation and momentum
+[macdLine, signalLine, _] = ta.macd(close, 12, 26, 9)
+
+// Bollinger Bands for volatility and mean reversion
+basis = ta.sma(close, bbLen)
+dev = bbMult * ta.stdev(close, bbLen)
+upperBB = basis + dev
+lowerBB = basis - dev
+
+// ATR for volatility measurement and risk management
+atr = ta.atr(atrLen)
+avgATR = ta.sma(atr, atrLen)
+
+// ADX for trend strength measurement
+adx = ta.adx(adxLen)
+
+// === MULTI-TIMEFRAME ANALYSIS ===
+// Higher timeframe trend confirmation
+htf_emaFast = enableMTF ? request.security(syminfo.tickerid, htfTimeframe, ta.ema(close, fastEMA)) : na
+htf_emaSlow = enableMTF ? request.security(syminfo.tickerid, htfTimeframe, ta.ema(close, slowEMA)) : na
+htf_rsi = enableMTF ? request.security(syminfo.tickerid, htfTimeframe, ta.rsi(close, rsiLen)) : na
+htf_adx = enableMTF ? request.security(syminfo.tickerid, htfTimeframe, ta.adx(adxLen)) : na
+
+// Higher timeframe trend direction
+htf_trendUp = enableMTF ? htf_emaFast > htf_emaSlow : false
+htf_trendDown = enableMTF ? htf_emaFast < htf_emaSlow : false
+htf_trendConfirm = enableMTF ? (htf_rsi > 50 and htf_adx > adxMin) : false
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ═══                        TRADING CONDITIONS                             ═══
+// ══════════════════════════════════════════════════════════════════════════════
+
+// === PRIMARY TREND CONDITIONS ===
+// EMA-based trend direction (Primary trend filter)
+trendUp = emaFast > emaSlow
+trendDown = emaFast < emaSlow
+
+// === MOMENTUM CONDITIONS ===
+// MACD momentum and trend change detection
+macdBull = macdLine > signalLine and macdLine > macdLine[1]  // Strengthening bullish momentum
+macdBear = macdLine < signalLine and macdLine < macdLine[1]  // Strengthening bearish momentum
+
+// RSI momentum with overbought/oversold boundaries
+rsiBull = rsi > 45 and rsi < rsiOB and rsi > rsi[1]  // Bullish momentum without being overbought
+rsiBear = rsi < 55 and rsi > rsiOS and rsi < rsi[1]  // Bearish momentum without being oversold
+
+// === PRICE ACTION CONDITIONS ===
+// Bollinger Band position for volatility context
+priceAboveBB = close > basis and close > close[1]  // Price above mean and rising
+priceBelowBB = close < basis and close < close[1]  // Price below mean and falling
+
+// === VOLATILITY AND STRENGTH CONDITIONS ===
+// Volatility confirmation (market is active enough for reliable signals)
+volatilityOK = atr > avgATR * 0.8  // Adequate volatility for signal reliability
+
+// ADX trend strength (ensures trending market conditions)
+adxStrong = adx > adxMin and adx > adx[1]  // Strong and strengthening trend
+
+// === MULTI-TIMEFRAME CONFIRMATION ===
+// Higher timeframe alignment for stronger signals
+mtf_bullConfirm = enableMTF ? (htf_trendUp and htf_trendConfirm) : true
+mtf_bearConfirm = enableMTF ? (htf_trendDown and htf_trendConfirm) : true
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ═══                      BUY/SELL SIGNAL LOGIC                            ═══
+// ══════════════════════════════════════════════════════════════════════════════
+
+// === ENHANCED BUY/SELL CONDITIONS ===
+// Primary buy condition (all bullish factors aligned)
+buyCond = trendUp and macdBull and rsiBull and priceAboveBB and volatilityOK and adxStrong and mtf_bullConfirm
+
+// Primary sell condition (all bearish factors aligned)  
+sellCond = trendDown and macdBear and rsiBear and priceBelowBB and volatilityOK and adxStrong and mtf_bearConfirm
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ═══                     ENHANCED CONFIDENCE SCORING                       ═══
+// ══════════════════════════════════════════════════════════════════════════════
+
+// === CUSTOMIZABLE CONFIDENCE CALCULATION ===
+// Calculate confidence score based on user-defined weights
+var float baseConfScore = 0.0
+var float finalConfScore = 0.0
+
+// Reset confidence score for each bar
+baseConfScore := 0.0
+
+// Add weighted components to confidence score
+baseConfScore += (trendUp or trendDown) ? trendWeight : 0
+baseConfScore += (macdBull or macdBear) ? macdWeight : 0  
+baseConfScore += (rsiBull or rsiBear) ? rsiWeight : 0
+baseConfScore += volatilityOK ? volWeight : 0
+baseConfScore += adxStrong ? adxWeight : 0
+
+// Add multi-timeframe bonus if enabled and confirmed
+mtfBonus = enableMTF and (mtf_bullConfirm or mtf_bearConfirm) ? mtfWeight : 0
+finalConfScore := baseConfScore + mtfBonus
+
+// Ensure confidence score doesn't exceed 100%
+confScore = math.min(finalConfScore, 100)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ═══                        RISK MANAGEMENT                                ═══
+// ══════════════════════════════════════════════════════════════════════════════
+
+// === ATR-BASED STOP LOSS AND TAKE PROFIT LEVELS ===
+var float buyStopLoss = na
+var float buyTakeProfit = na  
+var float sellStopLoss = na
+var float sellTakeProfit = na
+
+// Calculate risk levels when new signals occur
+if enableRiskMgmt and buyCond
+    buyStopLoss := close - (atr * atrMultiplierSL)
+    buyTakeProfit := close + (atr * atrMultiplierTP)
+    
+if enableRiskMgmt and sellCond  
+    sellStopLoss := close + (atr * atrMultiplierSL)
+    sellTakeProfit := close - (atr * atrMultiplierTP)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ═══                          CHART PLOTTING                               ═══
+// ══════════════════════════════════════════════════════════════════════════════
+
+// === TECHNICAL INDICATOR PLOTS ===
+plot(emaFast, color=color.lime, linewidth=2, title="Fast EMA")
+plot(emaSlow, color=color.red, linewidth=2, title="Slow EMA")
+plot(basis, color=color.blue, linewidth=1, title="BB Basis")
+plot(upperBB, color=color.gray, linewidth=1, title="BB Upper")
+plot(lowerBB, color=color.gray, linewidth=1, title="BB Lower")
+
+// === RISK MANAGEMENT LEVEL PLOTS ===
+// Plot stop loss and take profit levels when risk management is enabled
+plotshape(enableRiskMgmt and showRiskLevels and buyCond ? buyStopLoss : na, 
+          style=shape.xcross, location=location.absolute, color=color.red, size=size.small, title="Buy Stop Loss")
+plotshape(enableRiskMgmt and showRiskLevels and buyCond ? buyTakeProfit : na, 
+          style=shape.flag, location=location.absolute, color=color.green, size=size.small, title="Buy Take Profit")
+plotshape(enableRiskMgmt and showRiskLevels and sellCond ? sellStopLoss : na, 
+          style=shape.xcross, location=location.absolute, color=color.red, size=size.small, title="Sell Stop Loss")
+plotshape(enableRiskMgmt and showRiskLevels and sellCond ? sellTakeProfit : na, 
+          style=shape.flag, location=location.absolute, color=color.green, size=size.small, title="Sell Take Profit")
+
+// === BACKGROUND SHADING FOR BUY/SELL ZONES ===
+// Color-coded background to highlight trading zones
+bullishZone = trendUp and macdBull and rsiBull and volatilityOK
+bearishZone = trendDown and macdBear and rsiBear and volatilityOK
+
+bgcolor(showBackgroundShading and bullishZone ? color.new(color.green, 95) : na, title="Bullish Zone")
+bgcolor(showBackgroundShading and bearishZone ? color.new(color.red, 95) : na, title="Bearish Zone")
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ═══                     SIGNAL LABELS AND ALERTS                          ═══
+// ══════════════════════════════════════════════════════════════════════════════
+
+// === ENHANCED SIGNAL LABELS ===
+if showLabels
+    // Enhanced BUY signal labels with detailed information
+    if buyCond
+        labelText = "🔥 ORACLE BUY\n" + 
+                   "Conf: " + str.tostring(math.round(confScore)) + "%\n" +
+                   (enableMTF ? "MTF: ✓\n" : "") +
+                   (enableRiskMgmt ? "SL: " + str.tostring(buyStopLoss, "#.##") + "\nTP: " + str.tostring(buyTakeProfit, "#.##") : "")
+        
+        label.new(bar_index, low, 
+            text=labelText, 
+            style=label.style_label_up, 
+            color=color.new(color.green, 20), 
+            textcolor=color.white, 
+            size=size.normal,
+            tooltip="Oracle Precision Pro BUY Signal\nConfidence: " + str.tostring(math.round(confScore)) + "%")
+
+    // Enhanced SELL signal labels with detailed information  
+    if sellCond
+        labelText = "🔥 ORACLE SELL\n" + 
+                   "Conf: " + str.tostring(math.round(confScore)) + "%\n" +
+                   (enableMTF ? "MTF: ✓\n" : "") +
+                   (enableRiskMgmt ? "SL: " + str.tostring(sellStopLoss, "#.##") + "\nTP: " + str.tostring(sellTakeProfit, "#.##") : "")
+        
+        label.new(bar_index, high, 
+            text=labelText, 
+            style=label.style_label_down, 
+            color=color.new(color.red, 20), 
+            textcolor=color.white, 
+            size=size.normal,
+            tooltip="Oracle Precision Pro SELL Signal\nConfidence: " + str.tostring(math.round(confScore)) + "%")
+
+// === ENHANCED ALERT SYSTEM ===
+if enableAlerts
+    // Enhanced BUY alerts with comprehensive information
+    if buyCond
+        alertMsg = enhancedAlerts ? 
+                  "🔥 ORACLE PRECISION PRO - BUY SIGNAL\n" +
+                  "Ticker: " + syminfo.ticker + "\n" +
+                  "Timeframe: " + timeframe.period + "\n" +
+                  "Confidence: " + str.tostring(math.round(confScore)) + "%\n" +
+                  "Price: " + str.tostring(close, "#.##") + "\n" +
+                  (enableMTF ? "Multi-Timeframe: Confirmed (" + htfTimeframe + ")\n" : "") +
+                  (enableRiskMgmt ? "Stop Loss: " + str.tostring(buyStopLoss, "#.##") + "\nTake Profit: " + str.tostring(buyTakeProfit, "#.##") + "\n" : "") +
+                  "Trend: BULLISH | RSI: " + str.tostring(rsi, "#.##") + " | ADX: " + str.tostring(adx, "#.##") :
+                  "🔥 ORACLE ALERT: BIG BUY Signal! Confidence: " + str.tostring(math.round(confScore)) + "%"
+        
+        alert(alertMsg, alert.freq_once_per_bar_close)
+
+    // Enhanced SELL alerts with comprehensive information
+    if sellCond
+        alertMsg = enhancedAlerts ? 
+                  "🔥 ORACLE PRECISION PRO - SELL SIGNAL\n" +
+                  "Ticker: " + syminfo.ticker + "\n" +
+                  "Timeframe: " + timeframe.period + "\n" +
+                  "Confidence: " + str.tostring(math.round(confScore)) + "%\n" +
+                  "Price: " + str.tostring(close, "#.##") + "\n" +
+                  (enableMTF ? "Multi-Timeframe: Confirmed (" + htfTimeframe + ")\n" : "") +
+                  (enableRiskMgmt ? "Stop Loss: " + str.tostring(sellStopLoss, "#.##") + "\nTake Profit: " + str.tostring(sellTakeProfit, "#.##") + "\n" : "") +
+                  "Trend: BEARISH | RSI: " + str.tostring(rsi, "#.##") + " | ADX: " + str.tostring(adx, "#.##") :
+                  "🔥 ORACLE ALERT: BIG SELL Signal! Confidence: " + str.tostring(math.round(confScore)) + "%"
+        
+        alert(alertMsg, alert.freq_once_per_bar_close)
+
+// === ALERT CONDITIONS FOR EXTERNAL USE ===
+alertcondition(buyCond, title="Oracle PRECISION BUY", 
+               message="🔥 ORACLE BUY | " + syminfo.ticker + " | " + timeframe.period + " | Confidence: " + str.tostring(math.round(confScore)) + "%")
+alertcondition(sellCond, title="Oracle PRECISION SELL", 
+               message="🔥 ORACLE SELL | " + syminfo.ticker + " | " + timeframe.period + " | Confidence: " + str.tostring(math.round(confScore)) + "%")
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ═══                        STRATEGY INFORMATION                           ═══
+// ══════════════════════════════════════════════════════════════════════════════
+
+// === INFORMATION TABLE (OPTIONAL) ===
+// Display current strategy status and key metrics
+if barstate.islast
+    var table infoTable = table.new(position.top_right, 2, 6, bgcolor=color.white, border_width=1)
+    if enableMTF or enableRiskMgmt
+        table.cell(infoTable, 0, 0, "ORACLE PRO", text_color=color.black, text_size=size.small)
+        table.cell(infoTable, 1, 0, "STATUS", text_color=color.black, text_size=size.small)
+        table.cell(infoTable, 0, 1, "Confidence", text_color=color.black, text_size=size.tiny)
+        table.cell(infoTable, 1, 1, str.tostring(math.round(confScore)) + "%", text_color=color.black, text_size=size.tiny)
+        table.cell(infoTable, 0, 2, "Trend", text_color=color.black, text_size=size.tiny)
+        table.cell(infoTable, 1, 2, trendUp ? "UP" : trendDown ? "DOWN" : "NEUTRAL", 
+                  text_color=trendUp ? color.green : trendDown ? color.red : color.gray, text_size=size.tiny)
+        if enableMTF
+            table.cell(infoTable, 0, 3, "HTF Trend", text_color=color.black, text_size=size.tiny)
+            table.cell(infoTable, 1, 3, htf_trendUp ? "UP" : htf_trendDown ? "DOWN" : "NEUTRAL", 
+                      text_color=htf_trendUp ? color.green : htf_trendDown ? color.red : color.gray, text_size=size.tiny)
+        table.cell(infoTable, 0, 4, "ADX", text_color=color.black, text_size=size.tiny)
+        table.cell(infoTable, 1, 4, str.tostring(adx, "#.#"), text_color=color.black, text_size=size.tiny)
+        table.cell(infoTable, 0, 5, "RSI", text_color=color.black, text_size=size.tiny)
+        table.cell(infoTable, 1, 5, str.tostring(rsi, "#.#"), text_color=color.black, text_size=size.tiny)
