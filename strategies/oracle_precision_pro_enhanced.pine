@@ -1,0 +1,292 @@
+//@version=5
+indicator("ORACLE PRECISION PRO ENHANCED [Gold Strategy]", overlay=true, max_labels_count=500)
+
+// ========================================================================================
+// ORACLE PRECISION PRO ENHANCED - Advanced Gold Trading Strategy
+// Features: Multi-timeframe analysis, Advanced risk management, Customizable confidence scoring
+// ========================================================================================
+
+// === BASIC SETTINGS ===
+var g_basic = "Basic Settings"
+fastEMA = input.int(9, "Fast EMA", minval=1, maxval=50, group=g_basic)
+slowEMA = input.int(21, "Slow EMA", minval=1, maxval=100, group=g_basic)
+rsiLen = input.int(14, "RSI Length", minval=5, maxval=50, group=g_basic)
+rsiOB = input.int(70, "RSI Overbought", minval=60, maxval=90, group=g_basic)
+rsiOS = input.int(30, "RSI Oversold", minval=10, maxval=40, group=g_basic)
+bbLen = input.int(20, "Bollinger Band Length", minval=10, maxval=50, group=g_basic)
+bbMult = input.float(2.0, "BB Multiplier", minval=1.0, maxval=4.0, step=0.1, group=g_basic)
+atrLen = input.int(14, "ATR Length", minval=5, maxval=30, group=g_basic)
+adxLen = input.int(14, "ADX Length", minval=5, maxval=30, group=g_basic)
+adxMin = input.int(20, "Min ADX Strength", minval=10, maxval=50, group=g_basic)
+
+// === ENHANCED CONFIDENCE SCORING ===
+var g_confidence = "Confidence Scoring"
+enableConfidence = input.bool(true, "Enable Enhanced Confidence Scoring", group=g_confidence)
+trendWeight = input.float(25.0, "Trend Weight (%)", minval=0, maxval=50, step=1, group=g_confidence)
+macdWeight = input.float(20.0, "MACD Weight (%)", minval=0, maxval=50, step=1, group=g_confidence)
+rsiWeight = input.float(20.0, "RSI Weight (%)", minval=0, maxval=50, step=1, group=g_confidence)
+volatilityWeight = input.float(20.0, "Volatility Weight (%)", minval=0, maxval=50, step=1, group=g_confidence)
+adxWeight = input.float(15.0, "ADX Weight (%)", minval=0, maxval=50, step=1, group=g_confidence)
+minConfidence = input.float(70.0, "Minimum Confidence Threshold (%)", minval=50, maxval=95, step=5, group=g_confidence)
+
+// === MULTI-TIMEFRAME ANALYSIS ===
+var g_mtf = "Multi-Timeframe Analysis"
+enableMTF = input.bool(true, "Enable Multi-Timeframe Analysis", group=g_mtf)
+htfTimeframe = input.timeframe("1H", "Higher Timeframe", group=g_mtf)
+mtfEMAFast = input.int(9, "MTF Fast EMA", minval=1, maxval=50, group=g_mtf)
+mtfEMASlow = input.int(21, "MTF Slow EMA", minval=1, maxval=100, group=g_mtf)
+mtfRSILen = input.int(14, "MTF RSI Length", minval=5, maxval=50, group=g_mtf)
+
+// === RISK MANAGEMENT ===
+var g_risk = "Risk Management"
+enableRiskMgmt = input.bool(true, "Enable Risk Management", group=g_risk)
+maxRiskPerTrade = input.float(2.0, "Max Risk Per Trade (%)", minval=0.5, maxval=10, step=0.5, group=g_risk)
+stopLossATR = input.float(2.0, "Stop Loss (ATR Multiplier)", minval=1.0, maxval=5.0, step=0.1, group=g_risk)
+takeProfitRatio = input.float(2.0, "Take Profit Ratio (R:R)", minval=1.0, maxval=5.0, step=0.1, group=g_risk)
+maxDrawdown = input.float(10.0, "Max Drawdown Alert (%)", minval=5, maxval=25, step=1, group=g_risk)
+enableTrailing = input.bool(true, "Enable Trailing Stop", group=g_risk)
+trailingATR = input.float(1.5, "Trailing Stop (ATR Multiplier)", minval=0.5, maxval=3.0, step=0.1, group=g_risk)
+
+// === VISUAL & ALERT SETTINGS ===
+var g_visual = "Visual & Alerts"
+showLabels = input.bool(true, "Show Signal Labels", group=g_visual)
+showLevels = input.bool(true, "Show Support/Resistance Levels", group=g_visual)
+showRiskLevels = input.bool(true, "Show Risk Management Levels", group=g_visual)
+labelSize = input.string("Normal", "Label Size", options=["Small", "Normal", "Large"], group=g_visual)
+enableAlerts = input.bool(true, "Enable Alerts", group=g_visual)
+enableSoundAlerts = input.bool(false, "Enable Sound Alerts", group=g_visual)
+
+// === CALCULATIONS ===
+// Basic indicators
+emaFast = ta.ema(close, fastEMA)
+emaSlow = ta.ema(close, slowEMA)
+rsi = ta.rsi(close, rsiLen)
+[macdLine, signalLine, macdHist] = ta.macd(close, 12, 26, 9)
+basis = ta.sma(close, bbLen)
+dev = bbMult * ta.stdev(close, bbLen)
+upperBB = basis + dev
+lowerBB = basis - dev
+atr = ta.atr(atrLen)
+avgATR = ta.sma(atr, atrLen)
+adx = ta.adx(adxLen)
+
+// Enhanced volatility analysis
+volatilityPercentile = ta.percentrank(atr, 50)
+volatilityState = volatilityPercentile > 70 ? "High" : volatilityPercentile > 30 ? "Medium" : "Low"
+
+// Multi-timeframe analysis
+htfEMAFast = enableMTF ? request.security(syminfo.tickerid, htfTimeframe, ta.ema(close, mtfEMAFast)) : na
+htfEMASlow = enableMTF ? request.security(syminfo.tickerid, htfTimeframe, ta.ema(close, mtfEMASlow)) : na
+htfRSI = enableMTF ? request.security(syminfo.tickerid, htfTimeframe, ta.rsi(close, mtfRSILen)) : na
+
+// Support and Resistance levels
+pivot = ta.pivothigh(high, 5, 5)
+support = ta.pivotlow(low, 5, 5)
+
+// === ENHANCED CONDITIONS ===
+// Basic conditions
+trendUp = emaFast > emaSlow
+trendDown = emaFast < emaSlow
+macdBull = macdLine > signalLine and macdHist > macdHist[1]
+macdBear = macdLine < signalLine and macdHist < macdHist[1]
+rsiBull = rsi > 50 and rsi < rsiOB
+rsiBear = rsi < 50 and rsi > rsiOS
+priceAboveBB = close > basis
+priceBelowBB = close < basis
+volatilityOK = atr > avgATR * 0.8
+adxStrong = adx > adxMin
+
+// Multi-timeframe conditions
+htfTrendUp = enableMTF ? (htfEMAFast > htfEMASlow) : true
+htfTrendDown = enableMTF ? (htfEMAFast < htfEMASlow) : true
+htfRSIBull = enableMTF ? (htfRSI > 45 and htfRSI < 75) : true
+htfRSIBear = enableMTF ? (htfRSI < 55 and htfRSI > 25) : true
+
+// Enhanced volatility conditions
+goodVolatility = volatilityPercentile > 25 and volatilityPercentile < 85
+
+// === ENHANCED CONFIDENCE SCORING ===
+calculateConfidence(isBuy) =>
+    score = 0.0
+    if enableConfidence
+        // Trend component
+        if isBuy
+            score += trendUp and htfTrendUp ? trendWeight : 0
+        else
+            score += trendDown and htfTrendDown ? trendWeight : 0
+        
+        // MACD component
+        score += (isBuy ? macdBull : macdBear) ? macdWeight : 0
+        
+        // RSI component
+        if isBuy
+            score += rsiBull and htfRSIBull ? rsiWeight : 0
+        else
+            score += rsiBear and htfRSIBear ? rsiWeight : 0
+        
+        // Volatility component
+        score += goodVolatility ? volatilityWeight : 0
+        
+        // ADX component
+        score += adxStrong ? adxWeight : 0
+    else
+        // Legacy scoring
+        score += trendUp or trendDown ? 25 : 0
+        score += (macdBull or macdBear) ? 20 : 0
+        score += (rsiBull or rsiBear) ? 20 : 0
+        score += volatilityOK ? 20 : 0
+        score += adxStrong ? 15 : 0
+    score
+
+// === BUY / SELL CONDITIONS ===
+buyCondBasic = trendUp and macdBull and rsiBull and priceAboveBB and volatilityOK and adxStrong
+sellCondBasic = trendDown and macdBear and rsiBear and priceBelowBB and volatilityOK and adxStrong
+
+// Enhanced conditions with MTF
+buyCondEnhanced = buyCondBasic and htfTrendUp and htfRSIBull and goodVolatility
+sellCondEnhanced = sellCondBasic and htfTrendDown and htfRSIBear and goodVolatility
+
+// Final conditions with confidence threshold
+buyConfidence = calculateConfidence(true)
+sellConfidence = calculateConfidence(false)
+
+buyCond = buyCondEnhanced and buyConfidence >= minConfidence
+sellCond = sellCondEnhanced and sellConfidence >= minConfidence
+
+// === RISK MANAGEMENT CALCULATIONS ===
+var float entryPrice = na
+var float stopLoss = na
+var float takeProfit = na
+var float trailingStop = na
+
+if enableRiskMgmt
+    if buyCond and na(entryPrice)
+        entryPrice := close
+        stopLoss := close - (atr * stopLossATR)
+        takeProfit := close + (atr * stopLossATR * takeProfitRatio)
+        trailingStop := enableTrailing ? close - (atr * trailingATR) : na
+    
+    if sellCond and na(entryPrice)
+        entryPrice := close
+        stopLoss := close + (atr * stopLossATR)
+        takeProfit := close - (atr * stopLossATR * takeProfitRatio)
+        trailingStop := enableTrailing ? close + (atr * trailingATR) : na
+    
+    // Update trailing stop
+    if enableTrailing and not na(entryPrice)
+        if entryPrice < close // Long position
+            newTrailing = close - (atr * trailingATR)
+            trailingStop := na(trailingStop) ? newTrailing : math.max(trailingStop, newTrailing)
+        else if entryPrice > close // Short position
+            newTrailing = close + (atr * trailingATR)
+            trailingStop := na(trailingStop) ? newTrailing : math.min(trailingStop, newTrailing)
+    
+    // Reset on opposite signal
+    if (buyCond and entryPrice > close) or (sellCond and entryPrice < close)
+        entryPrice := na
+        stopLoss := na
+        takeProfit := na
+        trailingStop := na
+
+// === PLOT LINES ===
+// Basic plots
+plot(emaFast, color=color.new(color.green, 0), title="Fast EMA", linewidth=2)
+plot(emaSlow, color=color.new(color.red, 0), title="Slow EMA", linewidth=2)
+plot(basis, color=color.new(color.blue, 0), title="BB Basis")
+plot(upperBB, color=color.new(color.gray, 50), title="BB Upper")
+plot(lowerBB, color=color.new(color.gray, 50), title="BB Lower")
+
+// Multi-timeframe plots
+plot(enableMTF ? htfEMAFast : na, color=color.new(color.lime, 30), title="HTF Fast EMA", linewidth=1, style=plot.style_stepline)
+plot(enableMTF ? htfEMASlow : na, color=color.new(color.maroon, 30), title="HTF Slow EMA", linewidth=1, style=plot.style_stepline)
+
+// Risk management plots
+plot(showRiskLevels ? stopLoss : na, color=color.red, title="Stop Loss", style=plot.style_cross)
+plot(showRiskLevels ? takeProfit : na, color=color.green, title="Take Profit", style=plot.style_cross)
+plot(showRiskLevels ? trailingStop : na, color=color.orange, title="Trailing Stop", style=plot.style_circles)
+
+// === ENHANCED VISUALS ===
+// Support/Resistance levels
+if showLevels
+    if not na(pivot)
+        line.new(bar_index - 5, pivot, bar_index + 5, pivot, color=color.red, width=1, style=line.style_dashed)
+        label.new(bar_index, pivot, "R", style=label.style_label_down, color=color.red, textcolor=color.white, size=size.tiny)
+    
+    if not na(support)
+        line.new(bar_index - 5, support, bar_index + 5, support, color=color.green, width=1, style=line.style_dashed)
+        label.new(bar_index, support, "S", style=label.style_label_up, color=color.green, textcolor=color.white, size=size.tiny)
+
+// === SIGNAL LABELS & ALERTS ===
+getLabelSize() =>
+    labelSize == "Small" ? size.small : labelSize == "Large" ? size.large : size.normal
+
+if showLabels
+    if buyCond
+        labelText = "🚀 ENHANCED BUY\nConf: " + str.tostring(buyConfidence, "#.#") + "%\nVol: " + volatilityState
+        if enableMTF
+            labelText += "\nHTF: ✓"
+        label.new(bar_index, low - atr, 
+            text=labelText, 
+            style=label.style_label_up, 
+            color=color.new(color.lime, 10), 
+            textcolor=color.white, 
+            size=getLabelSize())
+        
+        if enableAlerts
+            alertMsg = "🚀 ORACLE ENHANCED: BUY Signal!\nConfidence: " + str.tostring(buyConfidence, "#.#") + "%\nVolatility: " + volatilityState
+            if enableMTF
+                alertMsg += "\nHTF Trend: Bullish"
+            alert(alertMsg, alert.freq_once_per_bar_close)
+
+    if sellCond
+        labelText = "🔻 ENHANCED SELL\nConf: " + str.tostring(sellConfidence, "#.#") + "%\nVol: " + volatilityState
+        if enableMTF
+            labelText += "\nHTF: ✓"
+        label.new(bar_index, high + atr, 
+            text=labelText, 
+            style=label.style_label_down, 
+            color=color.new(color.red, 10), 
+            textcolor=color.white, 
+            size=getLabelSize())
+        
+        if enableAlerts
+            alertMsg = "🔻 ORACLE ENHANCED: SELL Signal!\nConfidence: " + str.tostring(sellConfidence, "#.#") + "%\nVolatility: " + volatilityState
+            if enableMTF
+                alertMsg += "\nHTF Trend: Bearish"
+            alert(alertMsg, alert.freq_once_per_bar_close)
+
+// Risk management alerts
+if enableRiskMgmt and enableAlerts
+    if not na(stopLoss) and ((close <= stopLoss and entryPrice < close) or (close >= stopLoss and entryPrice > close))
+        alert("⚠️ STOP LOSS HIT! Position should be closed.", alert.freq_once_per_bar_close)
+    
+    if not na(takeProfit) and ((close >= takeProfit and entryPrice < close) or (close <= takeProfit and entryPrice > close))
+        alert("🎯 TAKE PROFIT HIT! Consider closing position.", alert.freq_once_per_bar_close)
+
+// === ENHANCED ALERT CONDITIONS ===
+alertcondition(buyCond, title="Oracle Enhanced BUY", message="🚀 ENHANCED BUY | Multi-timeframe confirmed | High confidence")
+alertcondition(sellCond, title="Oracle Enhanced SELL", message="🔻 ENHANCED SELL | Multi-timeframe confirmed | High confidence")
+
+// === PERFORMANCE METRICS ===
+// Display current strategy state
+var table infoTable = table.new(position.top_right, 2, 8, bgcolor=color.new(color.white, 80), border_width=1)
+if barstate.islast
+    table.cell(infoTable, 0, 0, "Metric", text_color=color.black, bgcolor=color.new(color.gray, 60))
+    table.cell(infoTable, 1, 0, "Value", text_color=color.black, bgcolor=color.new(color.gray, 60))
+    table.cell(infoTable, 0, 1, "Current Trend", text_color=color.black)
+    table.cell(infoTable, 1, 1, trendUp ? "Bullish ↗" : trendDown ? "Bearish ↘" : "Sideways ↔", text_color=trendUp ? color.green : trendDown ? color.red : color.gray)
+    table.cell(infoTable, 0, 2, "Volatility", text_color=color.black)
+    table.cell(infoTable, 1, 2, volatilityState + " (" + str.tostring(volatilityPercentile, "#") + "%)", text_color=color.black)
+    table.cell(infoTable, 0, 3, "ADX Strength", text_color=color.black)
+    table.cell(infoTable, 1, 3, str.tostring(adx, "#.#"), text_color=adxStrong ? color.green : color.red)
+    table.cell(infoTable, 0, 4, "RSI", text_color=color.black)
+    table.cell(infoTable, 1, 4, str.tostring(rsi, "#.#"), text_color=rsi > 70 ? color.red : rsi < 30 ? color.green : color.black)
+    if enableMTF
+        table.cell(infoTable, 0, 5, "HTF Trend", text_color=color.black)
+        table.cell(infoTable, 1, 5, htfTrendUp ? "Bullish ↗" : htfTrendDown ? "Bearish ↘" : "Neutral", text_color=htfTrendUp ? color.green : htfTrendDown ? color.red : color.gray)
+    if enableRiskMgmt and not na(entryPrice)
+        table.cell(infoTable, 0, 6, "Position", text_color=color.black)
+        table.cell(infoTable, 1, 6, entryPrice < close ? "Long" : "Short", text_color=entryPrice < close ? color.green : color.red)
+        table.cell(infoTable, 0, 7, "P&L", text_color=color.black)
+        pnl = entryPrice < close ? (close - entryPrice) / entryPrice * 100 : (entryPrice - close) / entryPrice * 100
+        table.cell(infoTable, 1, 7, str.tostring(pnl, "#.##") + "%", text_color=pnl > 0 ? color.green : color.red)
