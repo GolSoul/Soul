@@ -1,0 +1,231 @@
+//@version=5
+strategy("Oracle Precision Pro", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=10)
+
+// =============================================================================
+// INPUT PARAMETERS
+// =============================================================================
+
+// Technical Indicator Settings
+ema_fast_length = input.int(12, "Fast EMA Length", minval=1, maxval=100, group="Technical Indicators")
+ema_slow_length = input.int(26, "Slow EMA Length", minval=1, maxval=200, group="Technical Indicators")
+macd_fast = input.int(12, "MACD Fast Length", minval=1, maxval=50, group="Technical Indicators")
+macd_slow = input.int(26, "MACD Slow Length", minval=1, maxval=100, group="Technical Indicators")
+macd_signal = input.int(9, "MACD Signal Length", minval=1, maxval=50, group="Technical Indicators")
+rsi_length = input.int(14, "RSI Length", minval=1, maxval=50, group="Technical Indicators")
+atr_length = input.int(14, "ATR Length", minval=1, maxval=50, group="Technical Indicators")
+adx_length = input.int(14, "ADX Length", minval=1, maxval=50, group="Technical Indicators")
+
+// Confidence Scoring Weights
+trend_weight = input.float(0.25, "Trend Weight", minval=0.0, maxval=1.0, step=0.01, group="Confidence Scoring")
+macd_weight = input.float(0.20, "MACD Weight", minval=0.0, maxval=1.0, step=0.01, group="Confidence Scoring")
+rsi_weight = input.float(0.20, "RSI Weight", minval=0.0, maxval=1.0, step=0.01, group="Confidence Scoring")
+atr_weight = input.float(0.15, "ATR Weight", minval=0.0, maxval=1.0, step=0.01, group="Confidence Scoring")
+adx_weight = input.float(0.20, "ADX Weight", minval=0.0, maxval=1.0, step=0.01, group="Confidence Scoring")
+confidence_threshold = input.float(0.65, "Confidence Threshold", minval=0.0, maxval=1.0, step=0.01, group="Confidence Scoring")
+
+// Multi-Timeframe Settings
+use_htf_filter = input.bool(true, "Use Higher Timeframe Filter", group="Multi-Timeframe")
+htf_timeframe = input.timeframe("1D", "Higher Timeframe", group="Multi-Timeframe")
+
+// Risk Management
+use_atr_stops = input.bool(true, "Use ATR-based Stops", group="Risk Management")
+atr_stop_multiplier = input.float(2.0, "ATR Stop Loss Multiplier", minval=0.5, maxval=10.0, step=0.1, group="Risk Management")
+atr_target_multiplier = input.float(3.0, "ATR Take Profit Multiplier", minval=0.5, maxval=10.0, step=0.1, group="Risk Management")
+use_percent_stops = input.bool(false, "Use Percentage Stops", group="Risk Management")
+stop_loss_percent = input.float(2.0, "Stop Loss %", minval=0.1, maxval=10.0, step=0.1, group="Risk Management")
+take_profit_percent = input.float(4.0, "Take Profit %", minval=0.1, maxval=20.0, step=0.1, group="Risk Management")
+risk_per_trade = input.float(1.0, "Risk Per Trade %", minval=0.1, maxval=5.0, step=0.1, group="Risk Management")
+
+// Visual Settings
+show_signals = input.bool(true, "Show Entry/Exit Signals", group="Visuals")
+show_background = input.bool(true, "Show Trend Background", group="Visuals")
+show_confidence = input.bool(true, "Show Confidence Score", group="Visuals")
+
+// Alert Settings
+enable_alerts = input.bool(true, "Enable Alerts", group="Alerts")
+alert_on_trend_change = input.bool(true, "Alert on Trend Change", group="Alerts")
+alert_on_signals = input.bool(true, "Alert on Buy/Sell Signals", group="Alerts")
+
+// =============================================================================
+// TECHNICAL INDICATORS
+// =============================================================================
+
+// EMAs
+ema_fast = ta.ema(close, ema_fast_length)
+ema_slow = ta.ema(close, ema_slow_length)
+
+// MACD
+[macd_line, signal_line, macd_histogram] = ta.macd(close, macd_fast, macd_slow, macd_signal)
+
+// RSI
+rsi = ta.rsi(close, rsi_length)
+
+// ATR
+atr = ta.atr(atr_length)
+
+// ADX
+[di_plus, di_minus, adx] = ta.dmi(adx_length, adx_length)
+
+// Higher Timeframe Trend (if enabled)
+htf_ema_fast = use_htf_filter ? request.security(syminfo.tickerid, htf_timeframe, ta.ema(close, ema_fast_length)) : na
+htf_ema_slow = use_htf_filter ? request.security(syminfo.tickerid, htf_timeframe, ta.ema(close, ema_slow_length)) : na
+htf_trend = use_htf_filter ? (htf_ema_fast > htf_ema_slow ? 1 : -1) : 0
+
+// =============================================================================
+// CONFIDENCE SCORING SYSTEM
+// =============================================================================
+
+// Individual factor scores (0 to 1)
+trend_score = ema_fast > ema_slow ? 1.0 : 0.0
+macd_score = macd_line > signal_line and macd_line > 0 ? 1.0 : macd_line > signal_line ? 0.5 : 0.0
+rsi_score = rsi > 30 and rsi < 70 ? 1.0 : rsi > 50 ? 0.5 : 0.0
+atr_score = atr > ta.sma(atr, 20) ? 1.0 : 0.5  // Higher volatility gives higher score
+adx_score = adx > 25 ? 1.0 : adx > 20 ? 0.5 : 0.0  // Strong trend confirmation
+
+// Calculate weighted confidence score
+bullish_confidence = (trend_score * trend_weight + 
+                     macd_score * macd_weight + 
+                     rsi_score * rsi_weight + 
+                     atr_score * atr_weight + 
+                     adx_score * adx_weight)
+
+// Bearish confidence (inverse of bullish factors)
+bearish_trend_score = ema_fast < ema_slow ? 1.0 : 0.0
+bearish_macd_score = macd_line < signal_line and macd_line < 0 ? 1.0 : macd_line < signal_line ? 0.5 : 0.0
+bearish_rsi_score = rsi > 30 and rsi < 70 ? 1.0 : rsi < 50 ? 0.5 : 0.0
+
+bearish_confidence = (bearish_trend_score * trend_weight + 
+                     bearish_macd_score * macd_weight + 
+                     bearish_rsi_score * rsi_weight + 
+                     atr_score * atr_weight + 
+                     adx_score * adx_weight)
+
+// =============================================================================
+// SIGNAL GENERATION
+// =============================================================================
+
+// Base signals
+bullish_signal = bullish_confidence >= confidence_threshold
+bearish_signal = bearish_confidence >= confidence_threshold
+
+// Multi-timeframe filter
+bullish_confirmed = use_htf_filter ? (bullish_signal and htf_trend == 1) : bullish_signal
+bearish_confirmed = use_htf_filter ? (bearish_signal and htf_trend == -1) : bearish_signal
+
+// Entry conditions
+long_entry = bullish_confirmed and not bullish_confirmed[1]
+short_entry = bearish_confirmed and not bearish_confirmed[1]
+
+// Trend change detection
+trend_changed_bullish = bullish_confirmed and not bullish_confirmed[1]
+trend_changed_bearish = bearish_confirmed and not bearish_confirmed[1]
+
+// =============================================================================
+// RISK MANAGEMENT
+// =============================================================================
+
+// Calculate position size based on risk
+var float stop_loss_price = na
+var float take_profit_price = na
+
+if (long_entry)
+    if (use_atr_stops)
+        stop_loss_price := close - (atr * atr_stop_multiplier)
+        take_profit_price := close + (atr * atr_target_multiplier)
+    else if (use_percent_stops)
+        stop_loss_price := close * (1 - stop_loss_percent / 100)
+        take_profit_price := close * (1 + take_profit_percent / 100)
+
+if (short_entry)
+    if (use_atr_stops)
+        stop_loss_price := close + (atr * atr_stop_multiplier)
+        take_profit_price := close - (atr * atr_target_multiplier)
+    else if (use_percent_stops)
+        stop_loss_price := close * (1 + stop_loss_percent / 100)
+        take_profit_price := close * (1 - take_profit_percent / 100)
+
+// =============================================================================
+// STRATEGY EXECUTION
+// =============================================================================
+
+// Enter positions
+if (long_entry)
+    strategy.entry("Long", strategy.long, comment="Long Entry - Confidence: " + str.tostring(bullish_confidence, "#.##"))
+    
+if (short_entry)
+    strategy.entry("Short", strategy.short, comment="Short Entry - Confidence: " + str.tostring(bearish_confidence, "#.##"))
+
+// Exit positions
+if (use_atr_stops or use_percent_stops)
+    strategy.exit("Long Exit", "Long", stop=stop_loss_price, limit=take_profit_price)
+    strategy.exit("Short Exit", "Short", stop=stop_loss_price, limit=take_profit_price)
+
+// =============================================================================
+// VISUALS
+// =============================================================================
+
+// Plot EMAs
+plot(ema_fast, "Fast EMA", color=color.blue, linewidth=1)
+plot(ema_slow, "Slow EMA", color=color.red, linewidth=1)
+
+// Plot entry/exit signals
+plotshape(long_entry and show_signals, title="Long Entry", location=location.belowbar, 
+          style=shape.triangleup, size=size.normal, color=color.green)
+plotshape(short_entry and show_signals, title="Short Entry", location=location.abovebar, 
+          style=shape.triangledown, size=size.normal, color=color.red)
+
+// Background color for trend
+bgcolor(show_background ? (bullish_confirmed ? color.new(color.green, 95) : 
+        bearish_confirmed ? color.new(color.red, 95) : na) : na)
+
+// Plot confidence score
+var table confidence_table = table.new(position.top_right, 2, 3, bgcolor=color.white, border_width=1)
+if (show_confidence and barstate.islast)
+    table.cell(confidence_table, 0, 0, "Bullish Confidence", text_color=color.black)
+    table.cell(confidence_table, 1, 0, str.tostring(bullish_confidence, "#.##"), text_color=color.green)
+    table.cell(confidence_table, 0, 1, "Bearish Confidence", text_color=color.black)
+    table.cell(confidence_table, 1, 1, str.tostring(bearish_confidence, "#.##"), text_color=color.red)
+    table.cell(confidence_table, 0, 2, "Threshold", text_color=color.black)
+    table.cell(confidence_table, 1, 2, str.tostring(confidence_threshold, "#.##"), text_color=color.blue)
+
+// =============================================================================
+// ALERTS
+// =============================================================================
+
+// Alert messages
+long_alert_message = "🟢 LONG SIGNAL\n" + 
+                    "Price: " + str.tostring(close, "#.##") + "\n" +
+                    "Confidence: " + str.tostring(bullish_confidence, "#.##") + "\n" +
+                    "Time: " + str.tostring(timenow, "yyyy-MM-dd HH:mm") + "\n" +
+                    "Stop Loss: " + str.tostring(stop_loss_price, "#.##") + "\n" +
+                    "Take Profit: " + str.tostring(take_profit_price, "#.##")
+
+short_alert_message = "🔴 SHORT SIGNAL\n" + 
+                     "Price: " + str.tostring(close, "#.##") + "\n" +
+                     "Confidence: " + str.tostring(bearish_confidence, "#.##") + "\n" +
+                     "Time: " + str.tostring(timenow, "yyyy-MM-dd HH:mm") + "\n" +
+                     "Stop Loss: " + str.tostring(stop_loss_price, "#.##") + "\n" +
+                     "Take Profit: " + str.tostring(take_profit_price, "#.##")
+
+trend_change_bullish_message = "📈 TREND CHANGE: BULLISH\n" +
+                               "Price: " + str.tostring(close, "#.##") + "\n" +
+                               "Confidence: " + str.tostring(bullish_confidence, "#.##") + "\n" +
+                               "Time: " + str.tostring(timenow, "yyyy-MM-dd HH:mm")
+
+trend_change_bearish_message = "📉 TREND CHANGE: BEARISH\n" +
+                               "Price: " + str.tostring(close, "#.##") + "\n" +
+                               "Confidence: " + str.tostring(bearish_confidence, "#.##") + "\n" +
+                               "Time: " + str.tostring(timenow, "yyyy-MM-dd HH:mm")
+
+// Send alerts
+if (enable_alerts and alert_on_signals)
+    if (long_entry)
+        alert(long_alert_message, alert.freq_once_per_bar)
+    if (short_entry)
+        alert(short_alert_message, alert.freq_once_per_bar)
+
+if (enable_alerts and alert_on_trend_change)
+    if (trend_changed_bullish)
+        alert(trend_change_bullish_message, alert.freq_once_per_bar)
+    if (trend_changed_bearish)
+        alert(trend_change_bearish_message, alert.freq_once_per_bar)
