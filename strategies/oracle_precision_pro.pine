@@ -1,0 +1,80 @@
+//@version=5
+indicator("ORACLE PRECISION PRO [Gold Strategy]", overlay=true, max_labels_count=500)
+
+// === INPUTS ===
+fastEMA = input.int(9, "Fast EMA")
+slowEMA = input.int(21, "Slow EMA")
+rsiLen = input.int(14, "RSI Length")
+rsiOB = input.int(70, "RSI Overbought")
+rsiOS = input.int(30, "RSI Oversold")
+bbLen = input.int(20, "Bollinger Band Length")
+bbMult = input.float(2.0, "BB Multiplier")
+atrLen = input.int(14, "ATR Length")
+adxLen = input.int(14, "ADX Length")
+adxMin = input.int(20, "Min ADX Strength")
+showLabels = input.bool(true, "Show Labels")
+enableAlerts = input.bool(true, "Enable Alerts")
+
+// === CALCULATIONS ===
+emaFast = ta.ema(close, fastEMA)
+emaSlow = ta.ema(close, slowEMA)
+rsi = ta.rsi(close, rsiLen)
+[macdLine, signalLine, _] = ta.macd(close, 12, 26, 9)
+basis = ta.sma(close, bbLen)
+dev = bbMult * ta.stdev(close, bbLen)
+upperBB = basis + dev
+lowerBB = basis - dev
+atr = ta.atr(atrLen)
+avgATR = ta.sma(atr, atrLen)
+adx = ta.adx(adxLen)
+
+// === CONDITIONS ===
+trendUp = emaFast > emaSlow
+trendDown = emaFast < emaSlow
+macdBull = macdLine > signalLine
+macdBear = macdLine < signalLine
+rsiBull = rsi > 50 and rsi < rsiOB
+rsiBear = rsi < 50 and rsi > rsiOS
+priceAboveBB = close > basis
+priceBelowBB = close < basis
+volatilityOK = atr > avgATR
+adxStrong = adx > adxMin
+
+// === BUY / SELL CONDITIONS ===
+buyCond = trendUp and macdBull and rsiBull and priceAboveBB and volatilityOK and adxStrong
+sellCond = trendDown and macdBear and rsiBear and priceBelowBB and volatilityOK and adxStrong
+
+// === CONFIDENCE SCORE ===
+confScore = 0
+confScore += trendUp or trendDown ? 25 : 0
+confScore += (macdBull or macdBear) ? 20 : 0
+confScore += (rsiBull or rsiBear) ? 20 : 0
+confScore += volatilityOK ? 20 : 0
+confScore += adxStrong ? 15 : 0
+
+// === PLOT LINES ===
+plot(emaFast, color=color.green, title="Fast EMA")
+plot(emaSlow, color=color.red, title="Slow EMA")
+plot(basis, color=color.blue, title="BB Basis")
+plot(upperBB, color=color.gray)
+plot(lowerBB, color=color.gray)
+
+// === SIGNAL LABELS & ALERTS ===
+if showLabels
+    if buyCond
+        label.new(bar_index, low, 
+            text="🔥 BIG BUY\nConf: " + str.tostring(confScore) + "%", 
+            style=label.style_label_up, color=color.green, textcolor=color.white, size=size.normal)
+        if enableAlerts
+            alert("🔥 ORACLE ALERT: BIG BUY Signal! Confidence: " + str.tostring(confScore) + "%", alert.freq_once_per_bar_close)
+
+    if sellCond
+        label.new(bar_index, high, 
+            text="🔥 BIG SELL\nConf: " + str.tostring(confScore) + "%", 
+            style=label.style_label_down, color=color.red, textcolor=color.white, size=size.normal)
+        if enableAlerts
+            alert("🔥 ORACLE ALERT: BIG SELL Signal! Confidence: " + str.tostring(confScore) + "%", alert.freq_once_per_bar_close)
+
+// === ALERT CONDITIONS ===
+alertcondition(buyCond, title="Oracle BIG BUY", message="🔥 BIG BUY | Gold Uptrend | Confidence High")
+alertcondition(sellCond, title="Oracle BIG SELL", message="🔥 BIG SELL | Gold Downtrend | Confidence High")
